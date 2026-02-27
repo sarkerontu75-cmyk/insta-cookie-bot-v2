@@ -9,7 +9,7 @@ from flask import Flask
 import threading
 
 # টেলিগ্রাম থেকে পাওয়া টোকেন এখানে দিন
-TOKEN = "YOUR_API_TOKEN"
+TOKEN = "8365369624:AAEwBNJuuuAHldM4PYDGtd9tU5LYOL8VpDM"
 bot = telebot.TeleBot(TOKEN)
 
 user_data = {}
