@@ -6,12 +6,13 @@ import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from flask import Flask
 import threading
 
-TOKEN = "আপনার_বট_টোকেন"
+TOKEN = "YOUR_BOT_TOKEN_HERE"
 bot = telebot.TeleBot(TOKEN)
-
 user_data = {}
 
 def main_menu():
@@ -24,48 +25,73 @@ def main_menu():
 @bot.message_handler(commands=['start'])
 @bot.message_handler(func=lambda message: message.text == '🔄 Restart Bot')
 def start(message):
-    user_data[message.chat.id] = {}
-    bot.send_message(message.chat.id, "বটটি রিসেট করা হয়েছে। নিচের বাটন থেকে শুরু করুন:", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "বট প্রস্তুত। লগইন শুরু করতে নিচের বাটনে চাপ দিন:", reply_markup=main_menu())
 
 @bot.message_handler(func=lambda message: message.text == '🚀 Start Extraction')
 def ask_user(message):
-    msg = bot.send_message(message.chat.id, "আপনার ইনস্টাগ্রাম ইউজারনেম দিন:", reply_markup=types.ReplyKeyboardRemove())
+    msg = bot.send_message(message.chat.id, "👤 আপনার ইনস্টাগ্রাম ইউজারনেম দিন:", reply_markup=types.ReplyKeyboardRemove())
     bot.register_next_step_handler(msg, get_user)
 
 def get_user(message):
-    user_id = message.chat.id
-    user_data[user_id] = {'user': message.text}
-    msg = bot.send_message(user_id, "এখন আপনার পাসওয়ার্ড দিন:")
+    user_data[message.chat.id] = {'user': message.text}
+    msg = bot.send_message(message.chat.id, "🔑 এখন পাসওয়ার্ড দিন:")
     bot.register_next_step_handler(msg, get_pass)
 
 def get_pass(message):
     user_id = message.chat.id
     user_data[user_id]['pass'] = message.text
-    bot.send_message(user_id, "লগইন প্রসেস শুরু হচ্ছে... এটি ১-২ মিনিট সময় নিতে পারে।")
+    bot.send_message(user_id, "⏳ সেশন তৈরি হচ্ছে... অপেক্ষা করুন।")
 
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080") # স্ক্রিন সাইজ ফিক্স করা হয়েছে
+    # মোবাইল ব্রাউজার হিসেবে পরিচয় দেওয়ার জন্য User-Agent
+    options.add_argument("user-agent=Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36")
+    
     driver = webdriver.Chrome(options=options)
     user_data[user_id]['driver'] = driver
+    wait = WebDriverWait(driver, 25)
 
     try:
         driver.get("https://www.instagram.com/accounts/login/")
-        time.sleep(8)
-        driver.find_element(By.NAME, "username").send_keys(user_data[user_id]['user'])
+        time.sleep(5)
+        
+        # লগইন ইনপুট
+        wait.until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(user_data[user_id]['user'])
         driver.find_element(By.NAME, "password").send_keys(user_data[user_id]['pass'])
         driver.find_element(By.XPATH, "//button[@type='submit']").click()
         time.sleep(12)
 
-        if "checkpoint" in driver.current_url or "two_factor" in driver.current_url:
-            msg = bot.send_message(user_id, "⚠️ নিরাপত্তা কোড (OTP) প্রয়োজন! আপনার ইমেইল/ফোনে যাওয়া কোডটি এখানে লিখুন:")
-            bot.register_next_step_handler(msg, get_otp)
+        # ১. সাসপেন্ড বা আইডি নষ্ট ডিটেকশন
+        current_url = driver.current_url
+        page_content = driver.page_source.lower()
+        if "suspended" in page_content or "checkpoint/disabled" in current_url:
+            bot.send_message(user_id, "❌ দুঃখিত! এই আইডিটি বর্তমানে সাসপেন্ড বা নষ্ট অবস্থায় আছে।", reply_markup=main_menu())
+            driver.quit()
+            return
+
+        # ২. ইমেইল অপশন সিলেক্ট করা (যদি অপশন থাকে)
+        try:
+            email_option = driver.find_elements(By.XPATH, "//span[contains(text(), 'Email')] | //label[contains(text(), 'email')]")
+            if email_option:
+                email_option[0].click()
+                time.sleep(2)
+                driver.find_element(By.XPATH, "//button[contains(text(), 'Send Security Code')]").click()
+                bot.send_message(user_id, "📧 আপনার ইমেইলে একটি কোড পাঠানো হয়েছে। সেটি এখানে দিন:")
+                bot.register_next_step_handler(message, get_otp)
+                return
+        except: pass
+
+        # ৩. যদি সরাসরি ওটিপি পেজে যায়
+        if "two_factor" in current_url or "checkpoint" in current_url:
+            bot.send_message(user_id, "⚠️ আপনার ইমেইল বা ফোনে যাওয়া কোডটি এখানে দিন:")
+            bot.register_next_step_handler(message, get_otp)
         else:
-            finish_login(user_id)
+            handle_popups_and_finish(user_id)
+
     except Exception as e:
-        bot.send_message(user_id, "❌ লগইন ব্যর্থ হয়েছে। সম্ভবত পাসওয়ার্ড ভুল বা নেটওয়ার্ক ইস্যু। আবার ট্রাই করুন।", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ লগইন ব্যর্থ। তথ্য চেক করে আবার চেষ্টা করুন।", reply_markup=main_menu())
         driver.quit()
 
 def get_otp(message):
@@ -74,36 +100,42 @@ def get_otp(message):
     driver = user_data[user_id]['driver']
     try:
         driver.find_element(By.NAME, "verificationCode").send_keys(otp)
-        driver.find_element(By.XPATH, "//button[text()='Confirm']").click()
-        time.sleep(10)
-        finish_login(user_id)
+        driver.find_element(By.XPATH, "//button[contains(text(), 'Confirm')] | //button[@type='button']").click()
+        time.sleep(12)
+        handle_popups_and_finish(user_id)
     except:
-        bot.send_message(user_id, "❌ ওটিপি ভুল বা কাজ করেনি।", reply_markup=main_menu())
+        bot.send_message(user_id, "❌ কোড ভুল হয়েছে।", reply_markup=main_menu())
         driver.quit()
 
-def finish_login(user_id):
+def handle_popups_and_finish(user_id):
     driver = user_data[user_id]['driver']
     try:
+        # সকল পপ-আপ অটো স্কিপ
+        popups = ["Not Now", "Save Info", "Cancel", "Dismiss"]
+        for p in popups:
+            try:
+                btn = driver.find_elements(By.XPATH, f"//button[contains(text(), '{p}')]")
+                if btn: 
+                    btn[0].click()
+                    time.sleep(3)
+            except: pass
+
         cookies = driver.get_cookies()
-        if not cookies:
-            raise Exception("No cookies found")
-            
-        cookie_file = f"cookies_{user_id}.json"
-        with open(cookie_file, "w") as f:
-            json.dump(cookies, f, indent=4)
-        
-        with open(cookie_file, "rb") as f:
-            bot.send_document(user_id, f, caption="✅ সফল! আপনার কুকি ফাইলটি পাঠানো হলো।", reply_markup=main_menu())
-        os.remove(cookie_file)
-    except:
-        bot.send_message(user_id, "❌ লগইন হয়েছে কিন্তু কুকি সংগ্রহ করা যায়নি। আবার চেষ্টা করুন।", reply_markup=main_menu())
+        if cookies:
+            cookie_file = f"cookies_{user_id}.json"
+            with open(cookie_file, "w") as f:
+                json.dump(cookies, f, indent=4)
+            with open(cookie_file, "rb") as f:
+                bot.send_document(user_id, f, caption="✅ সাকসেস! আপনার কুকি ফাইল পাঠানো হলো।", reply_markup=main_menu())
+            os.remove(cookie_file)
+        else:
+            bot.send_message(user_id, "❌ লগইন সফল কিন্তু কুকি পাওয়া যায়নি।", reply_markup=main_menu())
     finally:
         driver.quit()
 
-# Render Health Check
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is Online"
+def home(): return "Bot Active"
 def run_flask(): app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
 
 if __name__ == "__main__":
